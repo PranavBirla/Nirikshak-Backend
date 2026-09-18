@@ -1,5 +1,28 @@
 // ============================================================
 // NIRIKSHAK 1.0 - extractor.js (v3)
+//
+// Goal:
+//   Extract packaged-commodity declaration fields from Google
+//   Vision OCR words + bounding boxes.
+//
+// Supported layouts:
+//   1. RIGHT  -> "MRP : 225.00"
+//   2. BELOW  -> "MRP" followed by "225.00"
+//
+// Important design rules:
+//   - Only RIGHT and BELOW relationships are considered.
+//   - A value must pass the field-specific type validator.
+//   - A value must be physically close to its label.
+//   - OCR label words can never become field values.
+//   - One OCR value can belong to only one field.
+//   - Suspicious/vertical OCR boxes are ignored.
+//   - Otherwise the field remains null rather than forcing a value.
+//
+// This is a deterministic prototype. It is intentionally not a
+// legal-decision engine.
+// ============================================================
+
+
 // ============================================================
 // 1. FIELD DEFINITIONS
 // ============================================================
@@ -22,8 +45,7 @@ const FIELD_DEFINITIONS = {
             "LOT NO.",
             "BATCH",
             "BATCH NO",
-            "BATCH NO.",
-            "BATCH NUMBER",
+            "BATCH NO."
         ],
         valueType: "lot"
     },
@@ -81,7 +103,7 @@ const FIELD_DEFINITIONS = {
             "UNIT SALE PRICE",
             "UNIT SELLING PRICE"
         ],
-        valueType: "usp"
+        valueType: "price"
     }
 };
 
@@ -529,13 +551,13 @@ function removeDuplicateLabels(labels) {
                 (existing) =>
                     existing.field === label.field &&
                     existing.boundingBox.x ===
-                    label.boundingBox.x &&
+                        label.boundingBox.x &&
                     existing.boundingBox.y ===
-                    label.boundingBox.y &&
+                        label.boundingBox.y &&
                     existing.boundingBox.width ===
-                    label.boundingBox.width &&
+                        label.boundingBox.width &&
                     existing.boundingBox.height ===
-                    label.boundingBox.height
+                        label.boundingBox.height
             );
 
         if (!alreadyExists) {
@@ -579,7 +601,8 @@ function parseNumericPrice(text) {
     return number;
 }
 
-function isUsp(text) {
+
+function isPrice(text) {
     const normalized =
         String(text ?? "")
             .replace(/\s+/g, " ")
@@ -588,8 +611,8 @@ function isUsp(text) {
     // Handles:
     // 85
     // 85.00
-    // ₹85
-    // ₹ 85.00
+    // â‚¹85
+    // â‚¹ 85.00
     // Rs 85
     // INR 85
     return (
@@ -597,132 +620,6 @@ function isUsp(text) {
             normalized
         ) !== null
     );
-}
-
-
-function isPrice(text) {
-    const normalized =
-        String(text ?? "")
-            .replace(/\s+/g, " ")
-            .trim();
-
-    if (!normalized) {
-        return false;
-    }
-
-    // Normalize common OCR spacing:
-    // "75 / -" -> "75/-"
-    // "Rs . 75" -> "Rs. 75"
-    const compact =
-        normalized
-            .replace(/\s*\/\s*-\s*/g, "/-")
-            .replace(/\s*\.\s*/g, ".")
-            .replace(/\s+/g, " ")
-            .trim();
-
-    // ----------------------------------------
-    // Strong MRP formats
-    // ----------------------------------------
-
-    // ₹75
-    // ₹75.00
-    // Rs 75
-    // Rs. 75
-    // INR 75
-    if (
-        /^(?:₹|RS\.?|INR)\s*\d{2,}(?:\.\d{1,2})?$/i.test(
-            compact
-        )
-    ) {
-        return true;
-    }
-
-    // 75/-
-    // 125/-
-    // 999/-
-    if (
-        /^\d{2,}\/-$/.test(
-            compact
-        )
-    ) {
-        return true;
-    }
-
-    // 75.00
-    // 125.50
-    // 999.00
-    if (
-        /^\d{2,}\.\d{1,2}$/.test(
-            compact
-        )
-    ) {
-        return true;
-    }
-
-    // Plain numeric MRP:
-    // 75
-    // 125
-    // 999
-    //
-    // IMPORTANT:
-    // Single-digit values are rejected.
-    if (
-        /^\d{2,}$/.test(
-            compact
-        )
-    ) {
-        return true;
-    }
-
-    return false;
-}
-
-function getPriceFormatScore(text) {
-    const normalized =
-        String(text ?? "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .replace(/\s*\/\s*-\s*/g, "/-")
-            .replace(/\s*\.\s*/g, ".")
-            .trim();
-
-    // Explicit currency = strongest evidence
-    if (
-        /^(?:₹|RS\.?|INR)\s*\d{2,}(?:\.\d{1,2})?$/i.test(
-            normalized
-        )
-    ) {
-        return 50;
-    }
-
-    // /- is also strong MRP evidence
-    if (
-        /^\d{2,}\/-$/.test(
-            normalized
-        )
-    ) {
-        return 45;
-    }
-
-    // Decimal price, e.g. 75.00
-    if (
-        /^\d{2,}\.\d{1,2}$/.test(
-            normalized
-        )
-    ) {
-        return 40;
-    }
-
-    // Plain 2+ digit number
-    if (
-        /^\d{2,}$/.test(
-            normalized
-        )
-    ) {
-        return 15;
-    }
-
-    return 0;
 }
 
 
@@ -825,9 +722,6 @@ function valueMatchesField(
         FIELD_DEFINITIONS[field]?.valueType;
 
     switch (type) {
-        case "usp":
-            return isUsp(text);
-
         case "price":
             return isPrice(text);
 
@@ -935,7 +829,7 @@ function getValueCandidates(
 
                 const nextWord =
                     rowWords[
-                    start + length - 1
+                        start + length - 1
                     ];
 
                 if (
@@ -951,7 +845,7 @@ function getValueCandidates(
                 ) {
                     const previousWord =
                         rowWords[
-                        start + length - 2
+                            start + length - 2
                         ];
 
                     const previousBox =
@@ -1055,15 +949,15 @@ function removeDuplicateCandidates(
             unique.some(
                 (existing) =>
                     existing.text ===
-                    candidate.text &&
+                        candidate.text &&
                     existing.boundingBox.x ===
-                    candidate.boundingBox.x &&
+                        candidate.boundingBox.x &&
                     existing.boundingBox.y ===
-                    candidate.boundingBox.y &&
+                        candidate.boundingBox.y &&
                     existing.boundingBox.width ===
-                    candidate.boundingBox.width &&
+                        candidate.boundingBox.width &&
                     existing.boundingBox.height ===
-                    candidate.boundingBox.height
+                        candidate.boundingBox.height
             );
 
         if (!exists) {
@@ -1213,8 +1107,8 @@ function getRightRelation(
     if (
         nextLabel &&
         candidate.boundingBox.x >=
-        nextLabel.boundingBox.x -
-        labelBox.width * 0.35
+            nextLabel.boundingBox.x -
+                labelBox.width * 0.35
     ) {
         return null;
     }
@@ -1223,16 +1117,16 @@ function getRightRelation(
         Math.max(
             0,
             1 -
-            Math.max(0, gap) /
-            maxGap
+                Math.max(0, gap) /
+                    maxGap
         ) * 70;
 
     const alignmentScore =
         Math.max(
             0,
             1 -
-            verticalOffset /
-            maxVerticalOffset
+                verticalOffset /
+                    maxVerticalOffset
         ) * 80;
 
     const overlapScore =
@@ -1322,16 +1216,16 @@ function getBelowRelation(
         Math.max(
             0,
             1 -
-            Math.max(0, gap) /
-            maxVerticalGap
+                Math.max(0, gap) /
+                    maxVerticalGap
         ) * 70;
 
     const alignmentScore =
         Math.max(
             0,
             1 -
-            horizontalOffset /
-            maxHorizontalOffset
+                horizontalOffset /
+                    maxHorizontalOffset
         ) * 80;
 
     const overlapScore =
@@ -1425,7 +1319,7 @@ function scoreCandidate(
         (
             !bestRelation ||
             belowRelation.score >
-            bestRelation.score
+                bestRelation.score
         )
     ) {
         bestRelation =
@@ -1436,14 +1330,10 @@ function scoreCandidate(
         return null;
     }
 
-    let score =
+    const score =
         100 +
         bestRelation.score +
         (candidate.confidence ?? 0) * 20;
-
-    if (label.field === "mrp") {
-        score += getPriceFormatScore(candidate.text);
-    }
 
     if (
         score <
